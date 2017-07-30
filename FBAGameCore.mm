@@ -27,240 +27,25 @@
 
 #import "FBAGameCore.h"
 #import <OpenEmuBase/OERingBuffer.h>
-#import "OEArcadeSystemResponderClient.h"
 #import <OpenGL/gl.h>
 
 #include "libretro.h"
 
 #define SAMPLERATE 32000
 
-@interface FBAGameCore () <OEArcadeSystemResponderClient>
-@end
-
-NSUInteger FBAEmulatorValues[] = { RETRO_DEVICE_ID_JOYPAD_UP, RETRO_DEVICE_ID_JOYPAD_DOWN, RETRO_DEVICE_ID_JOYPAD_LEFT, RETRO_DEVICE_ID_JOYPAD_RIGHT, RETRO_DEVICE_ID_JOYPAD_X, RETRO_DEVICE_ID_JOYPAD_L, RETRO_DEVICE_ID_JOYPAD_R, RETRO_DEVICE_ID_JOYPAD_Y, RETRO_DEVICE_ID_JOYPAD_B, RETRO_DEVICE_ID_JOYPAD_A, RETRO_DEVICE_ID_JOYPAD_START, RETRO_DEVICE_ID_JOYPAD_SELECT };
-
 FBAGameCore *_current;
+NSUInteger _rotation;
+retro_pixel_format _pixelFormat;
+
 @implementation FBAGameCore
 
-static void audio_callback(int16_t left, int16_t right)
-{
-    GET_CURRENT_AND_RETURN();
-    
-    [[current ringBufferAtIndex:0] write:&left maxLength:2];
-    [[current ringBufferAtIndex:0] write:&right maxLength:2];
-}
-
-static size_t audio_batch_callback(const int16_t *data, size_t frames)
-{
-    GET_CURRENT_AND_RETURN(frames);
-    
-    [[current ringBufferAtIndex:0] write:data maxLength:frames << 2];
-    return frames;
-}
-
-static void video_callback(const void *data, unsigned width, unsigned height, size_t pitch)
-{
-    GET_CURRENT_AND_RETURN();
-    
-    current->videoWidth  = width;
-    current->videoHeight = height;
-    
-//    NSLog(@"videoWidth: %i, videoHeight: %i", current->videoWidth, current->videoHeight);
-    
-    dispatch_queue_t the_queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    
-    dispatch_apply(height, the_queue, ^(size_t y){
-        const uint16_t *src = (uint16_t*)data + y * (pitch >> 1); //pitch is in bytes not pixels
-        uint16_t *dst = current->videoBuffer + y * width;
-        
-        memcpy(dst, src, sizeof(uint16_t)*width);
-    });
-}
-
-//static void video_callback(const void *data, unsigned width, unsigned height, size_t pitch)
-//{
-//    GET_CURRENT_AND_RETURN();
-//    
-//    // Normally our pitch is 2048 bytes.
-////    int stride = 1024;
-//    // If we have an interlaced mode, pitch is 1024 bytes.
-////    if ( height == current->videoWidth )
-////        stride = 1024;
-//    //stride = current->thePitch; //2048
-//    
-//    current->videoWidth  = width;
-//    current->videoHeight = height;
-//    
-//    dispatch_queue_t the_queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-//    
-//    // TODO opencl CPU device?
-//    dispatch_apply(height, the_queue, ^(size_t y){
-//        const uint16_t *src = (uint16_t*)data + y * (pitch >> 1);
-//        uint16_t *dst = current->videoBuffer + y * current->videoWidth;
-//        
-//        for (int x = 0; x < width; x++) {
-////            dst[x] = conv555Rto565(src[x]);
-//            dst[x] = src[x];
-//        }
-//    });
-//}
-
-static void input_poll_callback(void)
-{
-    //NSLog(@"poll callback");
-}
-
-static int16_t input_state_callback(unsigned port, unsigned device, unsigned index, unsigned _id)
-{
-    GET_CURRENT_AND_RETURN(0);
-    
-    //NSLog(@"polled input: port: %d device: %d id: %d", port, device, id);
-    
-    if (port == 0 & device == RETRO_DEVICE_JOYPAD) {
-        return current->pad[0][_id];
-    }
-//    else if(port == 1 & device == RETRO_DEVICE_JOYPAD) {
-//        return current->pad[1][_id];
-//    }
-    
-    return 0;
-}
-
-static bool environment_callback(unsigned cmd, void *data)
-{
-    GET_CURRENT_AND_RETURN(false);
-    
-    switch(cmd)
-    {
-        case RETRO_ENVIRONMENT_SET_ROTATION :
-        {
-            unsigned rotation = *(const unsigned *)data;
-            switch (rotation)
-            {
-                case 0:
-                    // 0
-                    break;
-                case 1:
-                    // 90
-                    break;
-                case 2:
-                    // 180
-                    break;
-                case 3:
-                    // 270
-                    break;
-                    
-                default:
-                    return false;
-            }
-        }
-        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT :
-        {
-            enum retro_pixel_format pix_fmt = *(const enum retro_pixel_format*)data;
-            switch (pix_fmt)
-            {
-                case RETRO_PIXEL_FORMAT_0RGB1555:
-                    NSLog(@"Environ SET_PIXEL_FORMAT: 0RGB1555");
-                    break;
-                    
-                case RETRO_PIXEL_FORMAT_RGB565:
-                    NSLog(@"Environ SET_PIXEL_FORMAT: RGB565");
-                    break;
-                    
-                case RETRO_PIXEL_FORMAT_XRGB8888:
-                    NSLog(@"Environ SET_PIXEL_FORMAT: XRGB8888");
-                    break;
-                    
-                default:
-                    return false;
-            }
-//            currentPixFmt = pix_fmt;
-            break;
-        }
-        case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY :
-        {
-            NSString *appSupportPath = current.biosDirectoryPath;
-            
-            *(const char **)data = [appSupportPath UTF8String];
-            NSLog(@"Environ SYSTEM_DIRECTORY: \"%@\".\n", appSupportPath);
-            break;
-        }
-        default :
-            NSLog(@"Environ UNSUPPORTED (#%u).\n", cmd);
-            return false;
-    }
-    
-    return true;
-}
-
-static void loadSaveFile(const char* path, int type)
-{
-    FILE *file;
-    
-    file = fopen(path, "rb");
-    if ( !file )
-    {
-        return;
-    }
-    
-    size_t size = retro_get_memory_size(type);
-    void *data = retro_get_memory_data(type);
-    
-    if (size == 0 || !data)
-    {
-        fclose(file);
-        return;
-    }
-    
-    int rc = fread(data, sizeof(uint8_t), size, file);
-    if ( rc != size )
-    {
-        NSLog(@"Couldn't load save file.");
-    }
-    
-    NSLog(@"Loaded save file: %s", path);
-    
-    fclose(file);
-}
-
-static void writeSaveFile(const char* path, int type)
-{
-    size_t size = retro_get_memory_size(type);
-    void *data = retro_get_memory_data(type);
-    
-    if ( data && size > 0 )
-    {
-        FILE *file = fopen(path, "wb");
-        if ( file != NULL )
-        {
-            NSLog(@"Saving state %s. Size: %d bytes.", path, (int)size);
-            retro_serialize(data, size);
-            if ( fwrite(data, sizeof(uint8_t), size, file) != size )
-                NSLog(@"Did not save state properly.");
-            fclose(file);
-        }
-    }
-}
-
-- (oneway void)didPushArcadeButton:(OEArcadeButton)button forPlayer:(NSUInteger)player;
-{
-    pad[player-1][FBAEmulatorValues[button]] = 1; //1 or 0xFFFF
-}
-
-- (oneway void)didReleaseArcadeButton:(OEArcadeButton)button forPlayer:(NSUInteger)player;
-{
-    pad[player-1][FBAEmulatorValues[button]] = 0;
-}
+#pragma mark - Life cycle
 
 - (id)init
 {
 	self = [super init];
     if(self != nil)
     {
-        if(videoBuffer) 
-            free(videoBuffer);
-        //videoBuffer = (uint16_t*)malloc(maxVideoWidth * maxVideoHeight * 2);
-        videoBuffer = (uint16_t*)malloc(1024 * 1024 * 2);
     }
 	
 	_current = self;
@@ -268,7 +53,13 @@ static void writeSaveFile(const char* path, int type)
 	return self;
 }
 
-#pragma mark Exectuion
+- (void)dealloc
+{
+    free(videoBuffer);
+    free(videoBufferRotated);
+}
+
+#pragma mark - Execution
 
 - (void)executeFrame
 {
@@ -304,7 +95,6 @@ static void writeSaveFile(const char* path, int type)
     retro_set_input_poll(input_poll_callback);
     retro_set_input_state(input_state_callback);
     
-    
     const char *fullPath = [path UTF8String];
     
     struct retro_game_info info = {NULL};
@@ -339,6 +129,16 @@ static void writeSaveFile(const char* path, int type)
         maxVideoWidth = info.geometry.max_width;
         maxVideoHeight = info.geometry.max_height;
         
+        NSLog(@"Resolution: %i x %i", videoWidth, videoHeight);
+        
+        if (videoBuffer)
+            free(videoBuffer);
+        videoBuffer = (uint16_t *)malloc(videoWidth * videoHeight * 2);
+
+        if (videoBufferRotated)
+            free(videoBufferRotated);
+        videoBufferRotated = (uint16_t *)malloc(videoWidth * videoHeight * 2);
+
         //retro_set_controller_port_device(SNES_PORT_1, RETRO_DEVICE_JOYPAD);
         
         retro_get_region();
@@ -351,15 +151,46 @@ static void writeSaveFile(const char* path, int type)
     return NO;
 }
 
-#pragma mark Video
+#pragma mark - Video
+
 - (const void *)videoBuffer
 {
-    return videoBuffer;
+    switch(_rotation)
+    {
+        case 1:
+        case 3:
+            [self rotateVideoBuffer];
+            return videoBufferRotated;
+            break;
+            
+        case 0:
+        case 2:
+        default:
+            return videoBuffer;
+            break;
+    }
 }
 
--(BOOL)rendersToOpenGL;
+- (BOOL)rendersToOpenGL;
 {
     return NO;
+}
+
+- (OEIntSize)aspectSize
+{
+    switch(_rotation)
+    {
+        case 1:
+        case 3:
+            return OEIntSizeMake(3, 4);
+            break;
+            
+        case 0:
+        case 2:
+        default:
+            return OEIntSizeMake(4, 3);
+            break;
+    }
 }
 
 - (OEIntRect)screenRect
@@ -369,7 +200,7 @@ static void writeSaveFile(const char* path, int type)
 
 - (OEIntSize)bufferSize
 {
-    return OEIntSizeMake(maxVideoWidth, maxVideoHeight);
+    return OEIntSizeMake(videoWidth, videoHeight);
 }
 
 - (void)setupEmulation
@@ -406,11 +237,6 @@ static void writeSaveFile(const char* path, int type)
     [super stopEmulation];
 }
 
-- (void)dealloc
-{
-    free(videoBuffer);
-}
-
 - (GLenum)pixelFormat
 {
     return GL_RGB;
@@ -418,9 +244,18 @@ static void writeSaveFile(const char* path, int type)
 
 - (GLenum)pixelType
 {
-    return GL_UNSIGNED_SHORT_5_6_5;
-//    return GL_UNSIGNED_SHORT_1_5_5_5_REV;
-//    return GL_UNSIGNED_INT_8_8_8_8;
+    switch (_pixelFormat)
+    {
+//        case RETRO_PIXEL_FORMAT_0RGB1555:
+//            return GL_UNSIGNED_SHORT_1_5_5_5_REV;
+//            
+//        case RETRO_PIXEL_FORMAT_XRGB8888:
+//            return GL_UNSIGNED_INT_8_8_8_8_REV;
+            
+        case RETRO_PIXEL_FORMAT_RGB565:
+        default:
+            return GL_UNSIGNED_SHORT_5_6_5;
+    }
 }
 
 - (GLenum)internalPixelFormat
@@ -441,6 +276,29 @@ static void writeSaveFile(const char* path, int type)
 - (NSUInteger)channelCount
 {
     return 2;
+}
+
+// Rotate the bitmap 270 degrees
+- (void)rotateVideoBuffer
+{
+    uint16_t *pS = _current->videoBuffer;
+    uint16_t *pD = _current->videoBufferRotated;
+    
+    uint32_t r, c, dr, dc;
+    uint32_t rows = MIN(_current->videoHeight, _current->videoWidth);
+    uint32_t cols = MAX(_current->videoHeight, _current->videoWidth);
+    
+    for(r = 0; r < rows; ++r)
+    {
+        dr = rows - r;
+        
+        for(c = 0; c < cols; ++c)
+        {
+            dc = cols - c;
+            
+            ((uint16_t *)pD)[dc * rows + (rows - dr)] = ((uint16_t *)pS)[(r * cols + c)];
+        }
+    }
 }
 
 #pragma mark - Save States
@@ -562,7 +420,198 @@ static void writeSaveFile(const char* path, int type)
     block(YES, nil);
 }
 
+#pragma mark - Input
+
+NSUInteger FBAEmulatorValues[] = {
+    RETRO_DEVICE_ID_JOYPAD_UP,
+    RETRO_DEVICE_ID_JOYPAD_DOWN,
+    RETRO_DEVICE_ID_JOYPAD_LEFT,
+    RETRO_DEVICE_ID_JOYPAD_RIGHT,
+    RETRO_DEVICE_ID_JOYPAD_X,
+    RETRO_DEVICE_ID_JOYPAD_L,
+    RETRO_DEVICE_ID_JOYPAD_R,
+    RETRO_DEVICE_ID_JOYPAD_Y,
+    RETRO_DEVICE_ID_JOYPAD_B,
+    RETRO_DEVICE_ID_JOYPAD_A,
+    RETRO_DEVICE_ID_JOYPAD_START,
+    RETRO_DEVICE_ID_JOYPAD_SELECT };
+
+- (oneway void)didPushArcadeButton:(OEArcadeButton)button forPlayer:(NSUInteger)player
+{
+    pad[player-1][FBAEmulatorValues[button]] = 1; //1 or 0xFFFF
+}
+
+- (oneway void)didReleaseArcadeButton:(OEArcadeButton)button forPlayer:(NSUInteger)player
+{
+    pad[player-1][FBAEmulatorValues[button]] = 0;
+}
+
+#pragma mark - Callback C/C++ methods
+
+static void audio_callback(int16_t left, int16_t right)
+{
+    GET_CURRENT_OR_RETURN();
+    
+    [[current ringBufferAtIndex:0] write:&left maxLength:2];
+    [[current ringBufferAtIndex:0] write:&right maxLength:2];
+}
+
+static size_t audio_batch_callback(const int16_t *data, size_t frames)
+{
+    GET_CURRENT_OR_RETURN(frames);
+    
+    [[current ringBufferAtIndex:0] write:data maxLength:frames << 2];
+    return frames;
+}
+
+static void video_callback(const void *data, unsigned width, unsigned height, size_t pitch)
+{
+    GET_CURRENT_OR_RETURN();
+    
+    dispatch_queue_t the_queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    
+    dispatch_apply(height, the_queue, ^(size_t y){
+        const uint16_t *src = (uint16_t *)data + y * (pitch >> 1); //pitch is in bytes not pixels
+        uint16_t *dst = _current->videoBuffer + y * width;
+        memcpy(dst, src, sizeof(uint16_t) * width);
+    });
+}
+
+static void input_poll_callback(void)
+{
+}
+
+static int16_t input_state_callback(unsigned port, unsigned device, unsigned index, unsigned _id)
+{
+    GET_CURRENT_OR_RETURN(0);
+    
+    if (port == 0 & device == RETRO_DEVICE_JOYPAD) {
+        return current->pad[0][_id];
+    }
+    
+    return 0;
+}
+
+static bool environment_callback(unsigned cmd, void *data)
+{
+    GET_CURRENT_OR_RETURN(false);
+    
+    switch(cmd)
+    {
+        case RETRO_ENVIRONMENT_SET_ROTATION :
+        {
+            _rotation = *(const unsigned *)data;
+            switch (_rotation)
+            {
+                case 0:
+                    NSLog(@"Environ SET_ROTATION: 0");
+                    break;
+                case 1:
+                    NSLog(@"Environ SET_ROTATION: 90");
+                    break;
+                case 2:
+                    NSLog(@"Environ SET_ROTATION: 180");
+                    break;
+                case 3:
+                    NSLog(@"Environ SET_ROTATION: 270");
+                    break;
+                    
+                default:
+                    return false;
+            }
+        }
+        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT :
+        {
+            _pixelFormat = *(const enum retro_pixel_format*)data;
+            switch (_pixelFormat)
+            {
+                case RETRO_PIXEL_FORMAT_0RGB1555:
+                    NSLog(@"Environ SET_PIXEL_FORMAT: 0RGB1555");
+                    break;
+                    
+                case RETRO_PIXEL_FORMAT_RGB565:
+                    NSLog(@"Environ SET_PIXEL_FORMAT: RGB565");
+                    break;
+                    
+                case RETRO_PIXEL_FORMAT_XRGB8888:
+                    NSLog(@"Environ SET_PIXEL_FORMAT: XRGB8888");
+                    break;
+                    
+                default:
+                    return false;
+            }
+            break;
+        }
+        case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY :
+        {
+            NSString *appSupportPath = current.biosDirectoryPath;
+            
+            *(const char **)data = [appSupportPath UTF8String];
+            NSLog(@"Environ SYSTEM_DIRECTORY: \"%@\".\n", appSupportPath);
+            break;
+        }
+        default :
+            NSLog(@"Environ UNSUPPORTED (#%u).\n", cmd);
+            return false;
+    }
+    
+    return true;
+}
+
+#pragma mark - Utility C/C++ methods
+
+static void loadSaveFile(const char* path, int type)
+{
+    FILE *file;
+    
+    file = fopen(path, "rb");
+    if ( !file )
+    {
+        return;
+    }
+    
+    size_t size = retro_get_memory_size(type);
+    void *data = retro_get_memory_data(type);
+    
+    if (size == 0 || !data)
+    {
+        fclose(file);
+        return;
+    }
+    
+    int rc = fread(data, sizeof(uint8_t), size, file);
+    if ( rc != size )
+    {
+        NSLog(@"Couldn't load save file.");
+    }
+    
+    NSLog(@"Loaded save file: %s", path);
+    
+    fclose(file);
+}
+
+static void writeSaveFile(const char* path, int type)
+{
+    size_t size = retro_get_memory_size(type);
+    void *data = retro_get_memory_data(type);
+    
+    if ( data && size > 0 )
+    {
+        FILE *file = fopen(path, "wb");
+        if ( file != NULL )
+        {
+            NSLog(@"Saving state %s. Size: %d bytes.", path, (int)size);
+            retro_serialize(data, size);
+            if ( fwrite(data, sizeof(uint8_t), size, file) != size )
+                NSLog(@"Did not save state properly.");
+            fclose(file);
+        }
+    }
+}
+
 @end
+
+#pragma mark - Burner support C/C++ methods
 
 #include "burner.h"
 

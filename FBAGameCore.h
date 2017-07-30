@@ -27,6 +27,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import <OpenEmuBase/OEGameCore.h>
+#import <OEArcadeSystemResponderClient.h>
 
 #define MAC_MAX_PLAYERS 1
 #define SNES_CONTROL_COUNT 10
@@ -36,16 +37,18 @@ extern NSString *FBAEmulatorNames[];
 @class OERingBuffer;
 
 OE_EXPORTED_CLASS
-@interface FBAGameCore : OEGameCore
+@interface FBAGameCore : OEGameCore <OEArcadeSystemResponderClient>
 {
     @public
     uint32    controlPad[MAC_MAX_PLAYERS];
     uint16_t *videoBuffer;
+    uint16_t *videoBufferRotated;
     int videoWidth, videoHeight, maxVideoWidth, maxVideoHeight;
     int16_t pad[1][10];
     NSString *romName;
     const unsigned * thePitch;
     double sampleRate;
+    NSTimeInterval frameInterval;
 }
 
 @end
